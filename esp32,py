@@ -1,0 +1,75 @@
+import machine
+import dht
+import time
+import network
+import urequests
+from ssd1306 import SSD1306_I2C
+
+# WiFi credentials
+SSID = "PEXIST106_9"
+PASSWORD = "imanilmuamal"
+
+# Ubidots configuration
+UBIDOTS_TOKEN = "BBUS-ZYMsrjRHYXbLRigG1JqWtRBmjhpLls"
+DEVICE_LABEL = "classroom_monitor"
+
+# Sensor pins
+KY038_PIN = 34
+DHT_PIN = 14
+i2c = machine.I2C(scl=machine.Pin(22), sda=machine.Pin(21))
+oled = SSD1306_I2C(128, 64, i2c)
+
+# Connect to WiFi
+def connect_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect(SSID, PASSWORD)
+    while not wlan.isconnected():
+        time.sleep(1)
+    print("Connected to WiFi:", wlan.ifconfig())
+
+# Send data to Ubidots
+def send_to_ubidots(temp, hum, sound):
+    url = f"http://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/"
+    payload = {"temperature": temp, "humidity": hum, "sound_level": sound}
+    headers = {
+        "X-Auth-Token": UBIDOTS_TOKEN,
+        "Content-Type": "application/json"
+    }
+    response = urequests.post(url, json=payload, headers=headers)
+    print("Ubidots Response:", response.text)
+
+# Main loop
+def main():
+    dht_sensor = dht.DHT11(machine.Pin(DHT_PIN))
+    ky038 = machine.ADC(machine.Pin(KY038_PIN))
+    ky038.atten(machine.ADC.ATTN_11DB)
+
+    while True:
+        try:
+            # Read DHT11 data
+            dht_sensor.measure()
+            temp = dht_sensor.temperature()
+            hum = dht_sensor.humidity()
+
+            # Read KY-038 sound level
+            sound = ky038.read()
+
+            # Display on OLED
+            oled.fill(0)
+            oled.text(f"Temp: {temp} C", 0, 0)
+            oled.text(f"Hum: {hum} %", 0, 10)
+            oled.text(f"Sound: {sound}", 0, 20)
+            oled.show()
+
+            # Send to Ubidots
+            send_to_ubidots(temp, hum, sound)
+
+            # Delay
+            time.sleep(10)
+        except Exception as e:
+            print("Error:", e)
+
+# Run
+connect_wifi()
+main()
