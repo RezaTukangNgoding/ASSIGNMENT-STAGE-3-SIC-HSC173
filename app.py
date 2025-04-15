@@ -1,62 +1,51 @@
 import streamlit as st
-from transformers import pipeline
-import os
 import requests
 import cv2
 from PIL import Image
 from datetime import datetime
+import os
 import time
-import warnings
-import json
-
-# Suppress warnings
-warnings.filterwarnings("ignore")
+from transformers import pipeline
 
 # Configuration
-ESP32_CAM_URL = "http://192.168.1.10:81/stream"  # Replace with your ESP32-CAM URL
+ESP32_CAM_URL = "http://192.168.1.10:81/stream"
 UBIDOTS_TOKEN = "BBUS-ZYMsrjRHYXbLRigG1JqWtRBmjhpLls"
 DEVICE_LABEL = "phaethon"
 SAVE_DIR = "absensi_foto"
-
-# Create save directory if not exists
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# Initialize Streamlit app
+# Streamlit App Setup
 st.set_page_config(page_title="Smart Classroom Management", layout="wide")
 st.title("🏫 Smart Classroom Management")
 
-# Streamlit Sidebar
-st.sidebar.title("📋 Menu")
-action = st.sidebar.radio("Choose Action", ["Absen", "Analisis Kelas", "Monitoring"])
+# Sidebar Menu
+action = st.sidebar.radio("Menu", ["Absensi", "Analisis & Chatbot", "Monitoring"])
 
-# Load Chatbot model with caching
+# Load AI Models
 @st.cache_resource
-def load_analysis_model():
-    return pipeline("text-generation", model="mistralai/Mistral-7B-Instruct-v0.1")
+def load_chatbot():
+    return pipeline("text-generation", model="microsoft/DialoGPT-medium")
 
-# Functions
-def kirim_absen(nama_siswa, kelas):
-    """Send attendance data to Ubidots."""
-    url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/"
-    payload = {
-        "absensi": 1,
-        "nama_siswa": nama_siswa,
-        "kelas": kelas
-    }
+# Ubidots Functions
+def send_to_ubidots(variable_name, value):
+    """Send data to Ubidots"""
+    url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}"
     headers = {
         "X-Auth-Token": UBIDOTS_TOKEN,
         "Content-Type": "application/json"
     }
+    payload = {variable_name: {"value": value}}
+    
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
         return True
-    except requests.exceptions.RequestException as e:
-        st.error(f"🚫 Error sending to Ubidots: {str(e)}")
+    except Exception as e:
+        st.error(f"Gagal mengirim data: {str(e)}")
         return False
 
 def get_ubidots_data():
-    """Fetch latest data from Ubidots."""
+    """Get latest data from Ubidots"""
     url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}"
     headers = {"X-Auth-Token": UBIDOTS_TOKEN}
     
@@ -65,94 +54,98 @@ def get_ubidots_data():
         response.raise_for_status()
         data = response.json()
         
-        # Extract latest values
+        # Extract the last values
         result = {}
-        for item in data['results']:
-            variable = item['variable']['label']
-            value = item['last_value']['value']
-            result[variable] = value
-        
+        for var_name, var_data in data.items():
+            if isinstance(var_data, dict) and 'last_value' in var_data:
+                result[var_name] = var_data['last_value']['value']
         return result
     except Exception as e:
         st.error(f"Gagal mengambil data: {str(e)}")
         return None
 
+# Analysis Functions
 def analyze_classroom(data):
-    """Generate classroom analysis using AI."""
-    analysis_model = load_analysis_model()
+    """Simple classroom analysis"""
+    analysis = []
     
-    prompt = f"""
-    Anda adalah ahli analisis kondisi kelas. Berikan analisis dan saran berdasarkan data berikut:
+    temp = data.get('temperature')
+    if temp:
+        if temp > 28: analysis.append("🔥 Suhu terlalu panas (>28°C)")
+        elif temp < 22: analysis.append("❄️ Suhu terlalu dingin (<22°C)")
+        else: analysis.append("🌡 Suhu normal")
     
-    Data Sensor:
-    - Suhu: {data.get('temperature', 'N/A')}°C
-    - Kelembaban: {data.get('humidity', 'N/A')}%
-    - Kebisingan: {data.get('noise', 'N/A')}dB
-    - Jumlah siswa hadir: {data.get('absensi', 'N/A')}
+    humidity = data.get('humidity')
+    if humidity:
+        if humidity > 70: analysis.append("💦 Kelembaban tinggi (>70%)")
+        elif humidity < 40: analysis.append("🏜 Kelembaban rendah (<40%)")
+        else: analysis.append("💧 Kelembaban normal")
     
-    Berikan:
-    1. Analisis kondisi kelas saat ini
-    2. Saran perbaikan jika diperlukan
-    3. Prediksi masalah yang mungkin timbul
-    4. Rekomendasi untuk guru
-    """
+    noise = data.get('noise')
+    if noise:
+        if noise > 65: analysis.append("🔊 Kebisingan tinggi (>65dB)")
+        else: analysis.append("🔉 Kebisingan normal")
     
-    response = analysis_model(
-        prompt,
-        max_length=1000,
-        temperature=0.7,
-        do_sample=True
-    )
-    
-    return response[0]['generated_text']
+    return "\n".join(analysis) if analysis else "Tidak ada data sensor"
 
-def start_camera(nama_siswa, kelas):
-    """Starts the ESP32-CAM stream and detects faces."""
+def ai_chatbot_response(user_input, sensor_data=None):
+    """Generate AI response with context"""
+    chatbot = load_chatbot()
+    
+    prompt = f"Pertanyaan: {user_input}\n"
+    if sensor_data:
+        prompt += f"Data sensor: Suhu {sensor_data.get('temperature')}°C, Kelembaban {sensor_data.get('humidity')}%, Kebisingan {sensor_data.get('noise')}dB\n"
+    prompt += "Jawaban:"
+    
+    response = chatbot(
+        prompt,
+        max_length=300,
+        pad_token_id=chatbot.tokenizer.eos_token_id
+    )
+    return response[0]['generated_text'].split("Jawaban:")[-1]
+
+# Attendance Function
+def capture_attendance(nama_siswa, kelas):
+    """Capture attendance using ESP32-CAM"""
     cap = cv2.VideoCapture(ESP32_CAM_URL)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     
     if not cap.isOpened():
-        st.error("🚫 Could not open camera stream. Check the URL and connection.")
+        st.error("Gagal terhubung ke kamera")
         return
 
-    stframe = st.empty()
-    foto_terambil = None
-    sudah_absen = False
+    st_frame = st.empty()
+    captured = False
 
-    with st.spinner("🔄 Mengakses kamera..."):
-        while cap.isOpened() and not sudah_absen:
-            ret, frame = cap.read()
-            if not ret:
-                st.error("🚫 Failed to fetch frame from the camera.")
-                time.sleep(2)
-                continue
+    while cap.isOpened() and not captured:
+        ret, frame = cap.read()
+        if not ret:
+            st.warning("Gagal mengambil frame")
+            time.sleep(1)
+            continue
 
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+        # Display the frame
+        st_frame.image(frame, channels="BGR", use_container_width=True)
+        
+        # Simple face detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
 
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-                if not sudah_absen:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = os.path.join(SAVE_DIR, f"{nama_siswa}_{kelas}_{timestamp}.jpg")
-                    cv2.imwrite(filename, frame)
-                    foto_terambil = Image.open(filename)
-                    if kirim_absen(nama_siswa, kelas):
-                        sudah_absen = True
-
-            stframe.image(frame, channels="BGR", use_container_width=True)
-            time.sleep(0.1)
+        if len(faces) > 0:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = os.path.join(SAVE_DIR, f"{nama_siswa}_{kelas}_{timestamp}.jpg")
+            cv2.imwrite(filename, frame)
+            if send_to_ubidots("absensi", 1):
+                st.success(f"✅ Absen {nama_siswa} berhasil!")
+                st.image(filename, caption=f"Absen {nama_siswa} ({kelas})", use_container_width=True)
+                captured = True
 
     cap.release()
-    if foto_terambil:
-        st.success(f"✅ Absen {nama_siswa} berhasil direkam!")
-        st.image(foto_terambil, caption=f"Absen {nama_siswa} - {kelas}", use_container_width=True)
 
-# Absen Page
-if action == "Absen":
+# Absensi Page
+if action == "Absensi":
     st.header("📸 Sistem Absensi Siswa")
     col1, col2 = st.columns(2)
     
@@ -169,73 +162,57 @@ if action == "Absen":
 
     if st.button("Ambil Absen", type="primary"):
         if nama_siswa.strip() and kelas:
-            start_camera(nama_siswa, kelas)
+            capture_attendance(nama_siswa, kelas)
         else:
-            st.warning("⚠️ Harap isi Nama Siswa dan pilih Kelas terlebih dahulu!")
+            st.warning("Harap isi Nama Siswa dan pilih Kelas!")
 
-# Analysis Page
-elif action == "Analisis Kelas":
-    st.header("📊 Analisis Kondisi Kelas")
+# Analysis & Chatbot Page
+elif action == "Analisis & Chatbot":
+    st.header("🤖 Analisis & Asisten Kelas")
     
-    if st.button("Analisis Sekarang", type="primary", help="Klik untuk menganalisis data terbaru dari sensor"):
-        with st.spinner("🔄 Mengambil dan menganalisis data..."):
+    tab1, tab2 = st.tabs(["Analisis Sensor", "Chatbot AI"])
+    
+    with tab1:
+        if st.button("Ambil Data Sensor"):
             sensor_data = get_ubidots_data()
-            
             if sensor_data:
-                st.subheader("📈 Data Sensor Terkini")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Suhu", f"{sensor_data.get('temperature', 'N/A')}°C")
-                
-                with col2:
-                    st.metric("Kelembaban", f"{sensor_data.get('humidity', 'N/A')}%")
-                
-                with col3:
-                    st.metric("Kebisingan", f"{sensor_data.get('noise', 'N/A')}dB")
-                
-                st.divider()
-                st.subheader("🧠 Analisis AI")
-                
-                analysis = analyze_classroom(sensor_data)
-                st.write(analysis)
+                cols = st.columns(3)
+                cols[0].metric("Suhu", f"{sensor_data.get('temperature', 'N/A')}°C")
+                cols[1].metric("Kelembaban", f"{sensor_data.get('humidity', 'N/A')}%")
+                cols[2].metric("Kebisingan", f"{sensor_data.get('noise', 'N/A')}dB")
+                st.write("### Analisis Kondisi")
+                st.write(analyze_classroom(sensor_data))
+    
+    with tab2:
+        user_input = st.text_area("Tanyakan tentang kondisi kelas:")
+        if st.button("Kirim Pertanyaan"):
+            if user_input.strip():
+                sensor_data = get_ubidots_data()
+                with st.spinner("AI sedang memproses..."):
+                    response = ai_chatbot_response(user_input, sensor_data)
+                    st.write("### 💬 Jawaban AI")
+                    st.write(response)
             else:
-                st.error("Tidak dapat memperoleh data sensor")
+                st.warning("Silakan tulis pertanyaan terlebih dahulu")
 
 # Monitoring Page
 elif action == "Monitoring":
     st.header("📊 Monitoring Kondisi Kelas")
-    st.markdown("Masukkan data sensor untuk dikirim ke Ubidots:")
     
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        ky038_value = st.number_input("Tingkat Kebisingan (dB):", min_value=0, max_value=100, value=50)
-    
-    with col2:
-        dht11_temp = st.number_input("Suhu Ruangan (°C):", min_value=0, max_value=50, value=25)
-    
-    with col3:
-        dht11_hum = st.number_input("Kelembaban (%):", min_value=0, max_value=100, value=60)
+    cols = st.columns(3)
+    noise = cols[0].number_input("Kebisingan (dB):", 0, 100, 50)
+    temp = cols[1].number_input("Suhu (°C):", 0, 50, 25)
+    humidity = cols[2].number_input("Kelembaban (%):", 0, 100, 60)
 
     if st.button("Kirim Data Sensor", type="primary"):
-        payload = {
-            "noise": ky038_value,
-            "temperature": dht11_temp,
-            "humidity": dht11_hum,
-        }
-        try:
-            url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/"
-            headers = {
-                "X-Auth-Token": UBIDOTS_TOKEN,
-                "Content-Type": "application/json"
-            }
-            response = requests.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            st.success("✅ Data berhasil dikirim ke Ubidots!")
-        except Exception as e:
-            st.error(f"🚫 Gagal mengirim data: {str(e)}")
+        if all(send_to_ubidots(var, val) for var, val in zip(
+            ["noise", "temperature", "humidity"], 
+            [noise, temp, humidity]
+        )):
+            st.success("Data berhasil dikirim!")
+        else:
+            st.error("Gagal mengirim beberapa data")
 
-# Add footer
+# Footer
 st.markdown("---")
 st.markdown("© 2023 Smart Classroom Management System")
