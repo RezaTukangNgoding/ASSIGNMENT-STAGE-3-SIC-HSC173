@@ -8,7 +8,7 @@ import time
 from transformers import pipeline
 
 # Konfigurasi
-ESP32_CAM_URL = "http://192.168.1.10:81/stream"
+ESP32_CAM_URL = "http://192.168.19.118:81/stream"
 UBIDOTS_TOKEN = "BBUS-ZYMsrjRHYXbLRigG1JqWtRBmjhpLls"
 DEVICE_LABEL = "phaethon"
 SAVE_DIR = "absensi_foto"
