@@ -1,7 +1,0 @@
-streamlit==1.32.2
-transformers==4.38.2
-torch==2.2.1
-torchvision==0.17.1
-opencv-python-headless==4.9.0.80
-pillow==10.2.0
-requests==2.31.0
