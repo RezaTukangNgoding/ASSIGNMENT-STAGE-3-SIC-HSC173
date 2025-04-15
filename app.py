@@ -5,6 +5,7 @@ from PIL import Image
 from datetime import datetime
 import os
 import time
+from transformers import pipeline
 
 # Konfigurasi
 ESP32_CAM_URL = "http://192.168.1.10:81/stream"
@@ -15,10 +16,15 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 # Setup Streamlit
 st.set_page_config(page_title="Manajemen Kelas Pintar", layout="wide")
-st.title("\U0001F3EB Manajemen Kelas Pintar")
+st.title("🏫 Manajemen Kelas Pintar")
 
 # Sidebar Menu
 action = st.sidebar.radio("Menu", ["Absensi", "Deskripsi Sensor", "Monitoring"])
+
+# Model AI Generatif
+@st.cache_resource
+def load_generator():
+    return pipeline("text-generation", model="gpt2")
 
 # Fungsi Ubidots
 def kirim_ke_ubidots(nama_variabel, nilai):
@@ -38,28 +44,29 @@ def kirim_ke_ubidots(nama_variabel, nilai):
 
 def ambil_data_sensor():
     """Mengambil data sensor terbaru dari Ubidots"""
-    url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}"
+    url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/"
     headers = {"X-Auth-Token": UBIDOTS_TOKEN}
     
     try:
         response = requests.get(url, headers=headers)
-        data = response.json()
-        return {
-            "suhu": data.get("temperature", {}).get("last_value", {}).get("value"),
-            "kelembaban": data.get("humidity", {}).get("last_value", {}).get("value"),
-            "kebisingan": data.get("noise", {}).get("last_value", {}).get("value")
-        }
-    except:
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "suhu": data.get("temperature", {}).get("value", "Tidak Tersedia"),
+                "kelembaban": data.get("humidity", {}).get("value", "Tidak Tersedia"),
+                "kebisingan": data.get("noise", {}).get("value", "Tidak Tersedia"),
+            }
+        else:
+            st.error(f"Gagal mengakses data: {response.status_code} - {response.reason}")
+            return None
+    except Exception as e:
+        st.error(f"Terjadi kesalahan: {e}")
         return None
 
-# Fungsi Generatif AI menggunakan Google Gemini
-def buat_deskripsi(pembacaan_sensor, gemini_api_key, gemini_api_secret):
+# Fungsi Generatif AI
+def buat_deskripsi(pembacaan_sensor):
     """Membuat deskripsi alami dari data sensor dalam Bahasa Indonesia"""
-    url = "https://api.google-gemini.com/v1/generate-text"
-    headers = {
-        "Authorization": f"Bearer {gemini_api_key}",
-        "Content-Type": "application/json"
-    }
+    generator = load_generator()
     
     prompt = f"""Data sensor:
 - Suhu: {pembacaan_sensor['suhu']}°C
@@ -67,19 +74,15 @@ def buat_deskripsi(pembacaan_sensor, gemini_api_key, gemini_api_secret):
 - Kebisingan: {pembacaan_sensor['kebisingan']}dB
 
 Deskripsi kondisi kelas dalam Bahasa Indonesia:"""
-
-    payload = {
-        "prompt": prompt,
-        "max_length": 150,
-        "temperature": 0.7
-    }
     
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        result = response.json()
-        return result['text'].strip()
-    except:
-        return "Gagal menghasilkan deskripsi."
+    output = generator(
+        prompt,
+        max_length=150,
+        num_return_sequences=1,
+        temperature=0.7
+    )
+    
+    return output[0]['generated_text'].split("Deskripsi kondisi kelas dalam Bahasa Indonesia:")[-1].strip()
 
 # Fungsi Absensi
 def ambil_absen(nama_siswa, kelas):
@@ -115,7 +118,7 @@ def ambil_absen(nama_siswa, kelas):
                 filename = os.path.join(SAVE_DIR, f"{nama_siswa}_{kelas}_{timestamp}.jpg")
                 cv2.imwrite(filename, frame)
                 if kirim_ke_ubidots("absensi", 1):
-                    st.success(f"\u2705 Absen {nama_siswa} berhasil!")
+                    st.success(f"✅ Absen {nama_siswa} berhasil!")
                     st.image(filename, caption=f"Absen {nama_siswa} ({kelas})", use_container_width=True)
                     sudah_absen = True
 
@@ -126,73 +129,4 @@ def ambil_absen(nama_siswa, kelas):
 
 # Halaman Absensi
 if action == "Absensi":
-    st.header("\U0001F4F8 Sistem Absensi Siswa")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        nama_siswa = st.text_input("Nama Lengkap Siswa:")
-        kelas = st.selectbox("Pilih Kelas:", ["Kelas 1", "Kelas 2", "Kelas 3", "Kelas 4"])
-        
-    with col2:
-        st.markdown("### Petunjuk:")
-        st.markdown("1. Isi nama lengkap siswa")
-        st.markdown("2. Pilih kelas")
-        st.markdown("3. Klik tombol 'Ambil Absen'")
-        st.markdown("4. Hadapkan wajah ke kamera")
-
-    if st.button("Ambil Absen", type="primary"):
-        if nama_siswa.strip() and kelas:
-            ambil_absen(nama_siswa, kelas)
-        else:
-            st.warning("Harap isi Nama Siswa dan pilih Kelas!")
-
-# Halaman Deskripsi Sensor
-elif action == "Deskripsi Sensor":
-    st.header("\U0001F4DD Deskripsi Kondisi Kelas")
-    gemini_api_key = st.secrets["GEMINI_API_KEY"]
-    gemini_api_secret = st.secrets["GEMINI_API_SECRET"]
-    
-    if st.button("Buat Deskripsi Otomatis", type="primary"):
-        with st.spinner("Menganalisis data sensor..."):
-            data_sensor = ambil_data_sensor()
-            
-            if data_sensor:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("\U0001F4CA Data Sensor")
-                    st.metric("Suhu", f"{data_sensor['suhu']}°C")
-                    st.metric("Kelembaban", f"{data_sensor['kelembaban']}%")
-                    st.metric("Kebisingan", f"{data_sensor['kebisingan']}dB")
-                
-                with col2:
-                    st.subheader("\U0001F58B\uFE0F Deskripsi AI")
-                    deskripsi = buat_deskripsi(data_sensor, gemini_api_key, gemini_api_secret)
-                    st.write(deskripsi)
-            else:
-                st.error("Gagal mengambil data sensor")
-
-# Halaman Monitoring
-elif action == "Monitoring":
-    st.header("\U0001F4C8 Monitoring Kelas")
-    
-    with st.spinner("Mengambil data sensor..."):
-        data_sensor = ambil_data_sensor()
-
-    if data_sensor:
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric("Kebisingan", f"{data_sensor['kebisingan']} dB")
-
-        with col2:
-            st.metric("Suhu", f"{data_sensor['suhu']} °C")
-
-        with col3:
-            st.metric("Kelembaban", f"{data_sensor['kelembaban']} %")
-    else:
-        st.error("Gagal mengambil data sensor")
-
-# Footer
-st.markdown("---")
-st.markdown("\u00A9 2023 Sistem Manajemen Kelas Pintar")
+    st
