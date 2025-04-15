@@ -57,7 +57,7 @@ def kirim_absen(nama_siswa, kelas):
 
 def get_ubidots_data():
     """Fetch latest data from Ubidots."""
-    url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/_/values"
+    url = f"https://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}"
     headers = {"X-Auth-Token": UBIDOTS_TOKEN}
     
     try:
