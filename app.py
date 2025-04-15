@@ -7,7 +7,7 @@ import os
 import time
 from transformers import pipeline
 
-# Konfigurasi 
+# Konfigurasi
 ESP32_CAM_URL = "http://192.168.19.118:81/stream"
 UBIDOTS_TOKEN = "BBUS-ZYMsrjRHYXbLRigG1JqWtRBmjhpLls"
 DEVICE_LABEL = "phaethon"
