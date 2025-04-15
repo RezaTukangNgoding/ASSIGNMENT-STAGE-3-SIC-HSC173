@@ -1,51 +1,66 @@
 import streamlit as st
-import cv2
-import numpy as np
-import requests
-from datetime import datetime
+from transformers import pipeline
 import os
+import requests
+import cv2
 from PIL import Image
+from datetime import datetime
 
-# Setup
+# Configuration
+ESP32_CAM_URL = "http://192.168.1.10:81/stream"  # Replace with your ESP32-CAM URL
 UBIDOTS_TOKEN = "BBUS-ZYMsrjRHYXbLRigG1JqWtRBmjhpLls"
 DEVICE_LABEL = "phaethon"
 SAVE_DIR = "absensi_foto"
-ESP32_CAM_URL = "http://192.168.49.236:81/stream"
-
-# Deteksi wajah menggunakan Haar Cascade
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
 
-st.title("Smart Phaethon Classroom - Absensi Deteksi Wajah")
+# Initialize Streamlit app
+st.title("Smart Classroom Management")
 
-# Fungsi untuk mengirim data absen
+# Streamlit Sidebar
+st.sidebar.title("Classroom Features")
+action = st.sidebar.radio("Choose Action", ["Absen", "Chatbot", "Monitoring"])
+
+# Load Hugging Face's DialoGPT for Chatbot
+chatbot = pipeline("text-generation", model="microsoft/DialoGPT-medium")
+
+# Functions
 def kirim_absen():
+    """Send attendance data to Ubidots."""
     url = f"http://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/"
     payload = {"absensi": 1}
     headers = {
         "X-Auth-Token": UBIDOTS_TOKEN,
         "Content-Type": "application/json"
     }
-    r = requests.post(url, json=payload, headers=headers)
+    requests.post(url, json=payload, headers=headers)
     st.success("✅ Absen berhasil dikirim ke Ubidots")
 
-# Fungsi untuk mulai deteksi wajah dan ambil foto
-def start_detection():
+def ai_chatbot(prompt):
+    """Interacts with Hugging Face's DialoGPT for classroom analysis."""
+    responses = chatbot(prompt, max_length=1000, num_return_sequences=1)
+    return responses[0]["generated_text"]
+
+def start_camera():
+    """Starts the ESP32-CAM stream and detects faces."""
     cap = cv2.VideoCapture(ESP32_CAM_URL)
-    sudah_absen = False
+    if not cap.isOpened():
+        st.error("🚫 Could not open camera stream.")
+        return
+
+    stframe = st.empty()
     foto_terambil = None
+    sudah_absen = False
 
-    st.info("📸 Sedang Mengambil Foto...")
-
-    while not sudah_absen:
+    while cap.isOpened() and not sudah_absen:
         ret, frame = cap.read()
         if not ret:
-            st.error("Gagal membaca kamera.")
+            st.error("🚫 Failed to fetch frame from the camera.")
             break
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
 
         for (x, y, w, h) in faces:
@@ -53,54 +68,62 @@ def start_detection():
 
             if not sudah_absen:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = os.path.join(SAVE_DIR, f"absen_{timestamp}.jpg")
+                filename = os.path.join(SAVE_DIR, f"{nama_siswa}_{kelas}_{timestamp}.jpg")
                 cv2.imwrite(filename, frame)
                 foto_terambil = Image.open(filename)
                 kirim_absen()
                 sudah_absen = True
 
-        if foto_terambil:
-            # Menyimpan foto di session_state agar tetap tampil setelah interaksi
-            st.session_state.foto_absen = foto_terambil
-            st.session_state.siswa_absen = st.session_state.namasiswa
-            break
+        stframe.image(frame, channels="BGR", use_container_width=True)
 
     cap.release()
+    if foto_terambil:
+        st.image(foto_terambil, caption=f"Absen {nama_siswa} di {kelas}", use_container_width=True)
 
-# Daftar Kelas yang tersedia
-kelas_list = ["Kelas 1", "Kelas 2", "Kelas 3", "Kelas 4"]
-kelas_terpilih = st.selectbox("Pilih Kelas", kelas_list)
+# Absen Page
+if action == "Absen":
+    st.header("📸 Absen Siswa")
+    nama_siswa = st.text_input("Nama Siswa:")
+    kelas = st.selectbox("Pilih Kelas:", ["Kelas 1", "Kelas 2", "Kelas 3", "Kelas 4"])
 
-# Menggunakan session state untuk menyimpan nama siswa yang telah terdaftar
-if "siswa" not in st.session_state:
-    st.session_state.siswa = {}
-
-# Input nama siswa
-nama_siswa = st.text_input("Nama Siswa:")
-
-# Tombol untuk menambah nama siswa
-if st.button("Tambah Siswa ke Kelas"):
-    if nama_siswa:
-        if kelas_terpilih not in st.session_state.siswa:
-            st.session_state.siswa[kelas_terpilih] = []
-        if nama_siswa not in st.session_state.siswa[kelas_terpilih]:
-            st.session_state.siswa[kelas_terpilih].append(nama_siswa)
-            st.success(f"Nama {nama_siswa} berhasil ditambahkan ke {kelas_terpilih}")
-            # Menyimpan nama siswa di session_state
-            st.session_state.namasiswa = nama_siswa
-            start_detection()  # Memanggil fungsi untuk mendeteksi wajah
+    if st.button("Ambil Absen"):
+        if nama_siswa and kelas:
+            start_camera()
         else:
-            st.warning(f"{nama_siswa} sudah ada di kelas {kelas_terpilih}")
-    else:
-        st.warning("Harap masukkan nama siswa terlebih dahulu!")
+            st.warning("⚠️ Harap isi Nama Siswa dan pilih Kelas terlebih dahulu!")
 
-# Menampilkan daftar siswa di kelas yang dipilih
-if kelas_terpilih in st.session_state.siswa and len(st.session_state.siswa[kelas_terpilih]) > 0:
-    st.write("Daftar Siswa di Kelas:", kelas_terpilih)
-    for siswa in st.session_state.siswa[kelas_terpilih]:
-        st.write(siswa)
+# Chatbot Page
+elif action == "Chatbot":
+    st.header("🤖 AI Chatbot")
+    prompt = st.text_area("Tulis pertanyaan Anda tentang kondisi kelas:")
+    if st.button("Kirim ke Chatbot"):
+        if prompt:
+            response = ai_chatbot(prompt)
+            st.write("### 💬 Balasan AI:")
+            st.write(response)
+        else:
+            st.warning("⚠️ Harap tulis pertanyaan terlebih dahulu!")
 
-# Menampilkan foto hasil absen yang diambil
-if 'foto_absen' in st.session_state:
-    st.image(st.session_state.foto_absen, caption=f"Foto Hasil Absen {st.session_state.siswa_absen}", use_column_width=True)
-    st.write(f"Nama: {st.session_state.siswa_absen}")
+# Monitoring Page
+elif action == "Monitoring":
+    st.header("📊 Monitoring Kondisi Kelas")
+    ky038_value = st.number_input("Masukkan nilai kebisingan dari KY038:", min_value=0, max_value=100, value=50)
+    dht11_temp = st.number_input("Masukkan suhu dari DHT11 (°C):", min_value=0, max_value=50, value=25)
+    dht11_hum = st.number_input("Masukkan kelembaban dari DHT11 (%):", min_value=0, max_value=100, value=60)
+
+    if st.button("Update Monitoring"):
+        payload = {
+            "noise": ky038_value,
+            "temperature": dht11_temp,
+            "humidity": dht11_hum,
+        }
+        url = f"http://industrial.api.ubidots.com/api/v1.6/devices/{DEVICE_LABEL}/"
+        headers = {
+            "X-Auth-Token": UBIDOTS_TOKEN,
+            "Content-Type": "application/json"
+        }
+        r = requests.post(url, json=payload, headers=headers)
+        if r.status_code == 200:
+            st.success("✅ Data berhasil dikirim ke Ubidots")
+        else:
+            st.error("🚫 Gagal mengirim data ke Ubidots.")
